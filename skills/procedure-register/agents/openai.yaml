@@ -1,0 +1,6 @@
+interface:
+  display_name: "标准流程注册"
+  short_description: "提取已跑通任务，用低成本模型独立测试，通过后发布可自动匹配的流程技能"
+  default_prompt: "使用 $procedure-register 将当前指定任务注册为参数化标准流程，完成独立模型测试和结果验收，通过后发布供后续复用。"
+policy:
+  allow_implicit_invocation: true
