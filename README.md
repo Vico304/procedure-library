@@ -2,7 +2,16 @@
 
 保存已经跑通、经过独立模型测试的标准流程和脚本，供本地与云端复用。注册入口是 `procedure-register`；每个验收通过的流程可以安装成单独的 Codex 技能。
 
-需要 Python 3.10+ 和已登录的 Codex CLI。工具本身只依赖 Python 标准库。模型执行和工具权限由当前 Codex 环境提供；不绕过沙箱或审批。
+需要 Python 3.10+ 和已登录的 Codex CLI 0.159.0+。工具本身只依赖 Python 标准库。macOS 优先使用 ChatGPT 桌面应用附带的兼容 CLI；`PROCEDURE_CODEX` 可显式指定可执行文件。模型执行和工具权限由当前环境提供；不绕过沙箱或审批。
+
+本仓库也是一个插件，包含注册入口和所有已验收流程的技能入口。可从 GitHub marketplace 安装：
+
+```bash
+codex plugin marketplace add Vico304/procedure-library --ref main
+codex plugin add procedure-library@procedure-library
+```
+
+安装后在新会话中使用“标准流程库”。注册修改源码副本，已安装插件缓存用于执行。新流程通过验收并推送后，刷新 marketplace 并重新安装更新插件。
 
 ```bash
 git clone https://github.com/Vico304/procedure-library.git
@@ -15,7 +24,7 @@ python3 tools/procedure.py models
 注册与发布规范见 [docs/registration.md](docs/registration.md)。仓库中的 `procedures/` 保存已验收版本；草稿、实际参数、模型输出和原始测试报告放在被忽略的 `.local/` 中。
 
 ```bash
-python3 tools/procedure.py init example-task --model MODEL_NAME --effort low
+python3 tools/procedure.py init example-task --complexity routine
 # 按任务补全 .local/drafts/example-task 中的规范、准备器与检查器。
 python3 tools/procedure.py validate .local/drafts/example-task
 python3 tools/procedure.py test .local/drafts/example-task
@@ -28,7 +37,14 @@ python3 tools/procedure.py install example-task --skills-dir SKILLS_DIRECTORY
 
 跨项目使用同一个本地流程库时，可设置 `PROCEDURE_LIBRARY`，或在已安装的注册技能目录中创建 `.local/library.json`，用 `library_path` 指向本机副本。这个绑定文件不提交到公开仓库；云端使用自己的副本与绑定。
 
-`MODEL_NAME` 从目标执行环境的 `models` 输出中选择，并选择其支持的推理强度。桌面应用和独立 CLI 的可用型号可能不同；型号不可用时保留失败记录，由注册者调整明确配置后重新测试，不自动替换。
+执行型号只使用以下两种，规则维护在 `tools/model-policy.json`：
+
+| 复杂度 | 选型依据 | 默认执行配置 |
+| --- | --- | --- |
+| `routine` | 输入与步骤明确，固定操作或少量已知分支 | `gpt-6-luna` / `low` |
+| `complex` | 较多分支判断、视觉理解或跨工具处理 | `gpt-6.1-terra` / `medium` |
+
+登记 `complexity` 与一句 `complexity_reason`。`--effort` 可调整推理强度，再按实际配置验收。型号不可用时报告原因，不换成 5.6 或其他型号；变更模型或复杂度后重新验收该版本。旧版验收保留在 Git 历史，不作为新配置的依据。
 
 ```bash
 python3 tools/procedure.py run procedures/example-task \
@@ -44,6 +60,9 @@ python3 tools/procedure.py run procedures/example-task \
 ```bash
 python3 -m unittest discover -s tests -v
 python3 tools/procedure.py audit
+python3 tools/procedure.py build-plugin
 ```
+
+插件 ZIP 生成到 `dist/`，只包含公开运行材料；不包含 `.local/`、Git 元数据或测试原始日志。插件技能引用统一流程包，避免把脚本和规则重复维护在多个入口中。云端也可独立安装流程技能，无须安装桌面插件。
 
 公开检查拦截常见个人绝对路径、凭据文件和令牌形态；发布时还应核对是否已经将业务绑定参数化。仓库不保存原始会话、个人配置、真实参数文件或原始模型日志。

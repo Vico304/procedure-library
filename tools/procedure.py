@@ -13,12 +13,14 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zipfile
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 
 LIBRARY = Path(__file__).resolve().parent.parent
 STATUSES = {"success", "needs_input", "blocked", "failed"}
-SKIP_DIRS = {".git", ".local", ".venv", "__pycache__"}
+SKIP_DIRS = {".git", ".local", ".venv", "__pycache__", "dist"}
 GENERATED = {"verification.json", "SKILL.md", "agents/openai.yaml", ".procedure-install.json"}
 RESULT_SCHEMA = {
     "type": "object",
@@ -72,7 +74,36 @@ def fingerprint(root):
 
 
 def runtime_digest():
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return hashlib.sha256(Path(__file__).read_bytes() + Path(__file__).with_name("model-policy.json").read_bytes()).hexdigest()
+
+
+def model_policy():
+    return read_json(Path(__file__).with_name("model-policy.json"))["profiles"]
+
+
+def executor_profile(complexity, effort=None):
+    profile = model_policy().get(complexity)
+    if profile is None:
+        raise ValueError("Choose routine or complex task complexity")
+    return {"model": profile["model"], "reasoning_effort": effort or profile["default_reasoning_effort"]}
+
+
+@lru_cache(maxsize=1)
+def codex_executable():
+    explicit = os.environ.get("PROCEDURE_CODEX")
+    candidates = [explicit] if explicit else [shutil.which("codex")]
+    if not explicit and sys.platform == "darwin":
+        candidates.insert(0, "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
+    observed = []
+    for command in candidates:
+        if not command or shutil.which(command) is None:
+            continue
+        result = subprocess.run([command, "--version"], capture_output=True, text=True, check=True, timeout=15)
+        match = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
+        if match and tuple(map(int, match.groups())) >= (0, 159, 0):
+            return command
+        observed.append(result.stdout.strip())
+    raise ValueError("Codex CLI 0.159.0+ is required for the selected models; use PROCEDURE_CODEX to select it. Found: " + ", ".join(observed))
 
 
 def member(root, name):
@@ -117,8 +148,11 @@ def manifest(root):
         if spec["type"] in {"file", "directory"} and spec.get("access") not in {"read", "write"}:
             raise ValueError(f"Declare path access for {name}")
     executor = data.get("executor", {})
-    if not isinstance(executor.get("model"), str) or not executor["model"]:
-        raise ValueError("Specify the executor model")
+    profile = executor_profile(data.get("complexity"))
+    if executor.get("model") != profile["model"]:
+        raise ValueError("Executor model must match the task complexity policy: 6 Luna or 6.1 Terra only")
+    if not isinstance(data.get("complexity_reason"), str) or not data["complexity_reason"].strip():
+        raise ValueError("Record the reason for the task complexity choice")
     if executor.get("reasoning_effort") not in {"low", "medium", "high", "xhigh", "max", "ultra", "minimal", "none"}:
         raise ValueError("Specify a reasoning effort supported by the selected model")
     cases = data.get("cases")
@@ -192,16 +226,18 @@ def parameters(data, values, workspace, write_roots=()):
 
 
 def require_tools(data):
-    for command in ["codex", *data.get("requirements", {}).get("commands", [])]:
+    codex_executable()
+    for command in data.get("requirements", {}).get("commands", []):
         if shutil.which(command) is None:
             raise ValueError(f"Required command unavailable: {command}")
 
 
 def available_models():
-    result = subprocess.run(["codex", "debug", "models"], capture_output=True, text=True, timeout=45, check=True)
+    result = subprocess.run([codex_executable(), "debug", "models"], capture_output=True, text=True, timeout=45, check=True)
     catalog = json.loads(result.stdout)
+    allowed = {profile["model"] for profile in model_policy().values()}
     return [{k: item[k] for k in ("slug", "display_name", "supported_reasoning_levels", "default_reasoning_level") if k in item}
-            for item in catalog["models"]]
+            for item in catalog["models"] if item["slug"] in allowed]
 
 
 def require_ready(root):
@@ -250,7 +286,7 @@ def worker(root, data, values, workspace, state, task, timeout, write_roots=()):
         + json.dumps({"bundle": str(state / "bundle"), "instructions": data["instructions"],
                       "task": task, "parameters": values, "workspace": str(workspace)}, ensure_ascii=False)
     )
-    command = ["codex", "exec", "--model", data["executor"]["model"], "-c",
+    command = [codex_executable(), "exec", "--model", data["executor"]["model"], "-c",
                "model_reasoning_effort=" + json.dumps(data["executor"]["reasoning_effort"]),
                "-c", "agents.enabled=false", "--sandbox", "workspace-write", "--ephemeral",
                "--skip-git-repo-check", "--json", "--output-schema", str(state / "result-schema.json"),
@@ -304,7 +340,7 @@ def test_package(root, library, timeout, selected=None):
     report = {"kind": "procedure-test-report-v1", "tested_at": now(), "content_digest": fingerprint(root),
               "runtime_digest": runtime_digest(), "executor": data["executor"],
               "environment": {"platform": sys.platform, "python": platform.python_version(),
-                              "codex": subprocess.run(["codex", "--version"], capture_output=True, text=True, check=True).stdout.strip()},
+                              "codex": subprocess.run([codex_executable(), "--version"], capture_output=True, text=True, check=True).stdout.strip()},
               "cases": [], "complete": False, "passed": False}
     cases = [c for c in data["cases"] if selected is None or c["id"] == selected]
     if not cases:
@@ -376,7 +412,7 @@ def promote(root, report_path, library, replace=False):
         raise ValueError("All declared cases require independent verification")
     audit(root)
     target = library / "procedures" / data["id"]
-    if target.exists() and (not replace or manifest(target)["version"] == data["version"]):
+    if target.exists() and (not replace or read_json(target / "procedure.json")["version"] == data["version"]):
         raise ValueError("Replacing a published procedure requires --replace and a new version")
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".promote-", dir=target.parent))
@@ -387,7 +423,47 @@ def promote(root, report_path, library, replace=False):
     audit(staging)
     replace_directory(staging, target)
     refresh_catalog(library)
+    if (library / "plugin.json").is_file():
+        refresh_plugin_skills(library)
     return target
+
+
+def skill_documents(data, plugin=False):
+    name = "procedure-" + data["id"]
+    description = data["description"] + " 适用于：" + "；".join(data["triggers"])
+    if len(description) > 1024:
+        raise ValueError("Shorten the description/triggers to fit skill discovery metadata")
+    base = "../../procedures/" + data["id"] + "/" if plugin else ""
+    command = ("python3 <插件根>/tools/procedure.py run <插件根>/procedures/" + data["id"] if plugin
+               else "python3 <本技能目录>/.runner/procedure.py run <本技能目录>")
+    location_note = "插件根是本 SKILL.md 所在目录的上两级目录。" if plugin else ""
+    text = f'''---
+name: {name}
+description: {json.dumps(description, ensure_ascii=False)}
+metadata:
+  version: "{data['version']}"
+---
+
+# {data['description']}
+
+读取 [输入契约]({base}procedure.json) 和 [流程说明]({base}{data['instructions']})，确认本次任务适用并取得所需参数。真实路径等绑定写入本地临时 JSON，不修改已验收流程。
+
+运行入口使用登记的模型和推理强度启动独立执行器，并检查真实产物：
+
+```text
+{command} --parameters <参数文件> --workspace <本次工作目录>
+```
+
+{location_note}额外写入目录仅在当前授权覆盖时通过 `--write-root <目录>` 显式传入。收到失败、缺少输入或前提不满足时报告停点与运行记录，不静默换模型、扩大范围或自行修订流程。当前主模型负责必要判断，业务步骤由该入口执行。
+'''
+    ui = f'''interface:
+  display_name: {json.dumps(data['description'], ensure_ascii=False)}
+  short_description: "按已验证的标准步骤执行该流程，固定使用登记模型并独立检查实际结果"
+  default_prompt: "使用 ${name} 执行当前匹配任务，确认参数和前提后调用已验证的流程入口。"
+policy:
+  allow_implicit_invocation: true
+'''
+    return text, ui
 
 
 def install(root, skills_dir):
@@ -404,39 +480,11 @@ def install(root, skills_dir):
     staging = Path(tempfile.mkdtemp(prefix=".install-", dir=skills_dir))
     shutil.copytree(root, staging, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".local", "__pycache__", ".DS_Store"))
     (staging / ".runner").mkdir(exist_ok=True)
-    shutil.copy2(Path(__file__), staging / ".runner" / "procedure.py")
-    name = target.name
-    description = data["description"] + " 适用于：" + "；".join(data["triggers"])
-    if len(description) > 1024:
-        raise ValueError("Shorten the description/triggers to fit skill discovery metadata")
-    text = f'''---
-name: {name}
-description: {json.dumps(description, ensure_ascii=False)}
-metadata:
-  version: "{data['version']}"
----
-
-# {data['description']}
-
-读取 [输入契约](procedure.json) 和 [流程说明]({data['instructions']})，确认本次任务适用并取得所需参数。真实路径等绑定写入本地临时 JSON，不修改已验收流程。
-
-运行入口使用登记的模型和推理强度启动独立执行器，并检查真实产物：
-
-```text
-python3 <本技能目录>/.runner/procedure.py run <本技能目录> --parameters <参数文件> --workspace <本次工作目录>
-```
-
-额外写入目录仅在当前授权覆盖时通过 `--write-root <目录>` 显式传入。收到失败、缺少输入或前提不满足时报告停点与运行记录，不静默换模型、扩大范围或自行修订流程。当前主模型负责必要判断，业务步骤由该入口执行。
-'''
+    for filename in ("procedure.py", "model-policy.json"):
+        shutil.copy2(Path(__file__).with_name(filename), staging / ".runner" / filename)
+    text, ui = skill_documents(data)
     (staging / "SKILL.md").write_text(text, encoding="utf-8")
     (staging / "agents").mkdir(exist_ok=True)
-    ui = f'''interface:
-  display_name: {json.dumps(data['description'], ensure_ascii=False)}
-  short_description: "按已验证的标准步骤执行该流程，固定使用登记模型并独立检查实际结果"
-  default_prompt: "使用 ${name} 执行当前匹配任务，确认参数和前提后调用已验证的流程入口。"
-policy:
-  allow_implicit_invocation: true
-'''
     (staging / "agents" / "openai.yaml").write_text(ui, encoding="utf-8")
     write_json(staging / ".procedure-install.json", {"id": data["id"], "version": data["version"], "content_digest": fingerprint(root)})
     require_ready(staging)
@@ -444,15 +492,49 @@ policy:
     return target
 
 
-def init_draft(ident, library, model, effort):
+def refresh_plugin_skills(library):
+    library = Path(library)
+    for path in sorted((library / "procedures").glob("*/procedure.json")):
+        data = require_ready(path.parent)
+        target = library / "skills" / ("procedure-" + data["id"])
+        text, ui = skill_documents(data, plugin=True)
+        (target / "agents").mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(text, encoding="utf-8")
+        (target / "agents/openai.yaml").write_text(ui, encoding="utf-8")
+
+
+def build_plugin(library, output):
+    library, output = Path(library).resolve(), Path(output).resolve()
+    for required in ("tools/procedure.py", "tools/model-policy.json", "skills/procedure-register/SKILL.md"):
+        member(library, required)
+    refresh_plugin_skills(library)
+    audit(library)
+    config = read_json(library / "plugin.json")
+    if config.get("name") != "procedure-library":
+        raise ValueError("Unexpected plugin identity")
+    included = {"plugin.json", ".codex-plugin", "README.md", "catalog.json", "docs", "tools", "procedures", "skills"}
+    if output.is_relative_to(library) and output.relative_to(library).parts and output.relative_to(library).parts[0] in included:
+        raise ValueError("Build output must be outside plugin source directories")
+    output.mkdir(parents=True, exist_ok=True)
+    destination = output / f"procedure-library-{config['version']}.zip"
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for rel, path in files(library):
+            if rel.parts[0] in included:
+                archive.write(path, Path("procedure-library") / rel)
+    return destination
+
+
+def init_draft(ident, library, complexity, effort=None):
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", ident):
         raise ValueError("Invalid procedure id")
     root = Path(library) / ".local" / "drafts" / ident
     root.mkdir(parents=True, exist_ok=False)
+    executor = executor_profile(complexity, effort)
     data = {"schema_version": 1, "id": ident, "version": "0.1.0", "description": "TODO: describe the task",
             "triggers": ["TODO: recognizable task"], "instructions": "procedure.md",
             "parameters": {"input": {"type": "string", "required": True}},
-            "requirements": {"commands": ["python3"]}, "executor": {"model": model, "reasoning_effort": effort},
+            "requirements": {"commands": ["python3"]}, "complexity": complexity,
+            "complexity_reason": "Record why this task fits the selected complexity.", "executor": executor,
             "prepare": "checks/prepare.py", "verify": "checks/verify.py",
             "cases": [{"id": "basic", "task": "Perform the procedure with the supplied parameters.", "expect_status": "success"}]}
     write_json(root / "procedure.json", data)
@@ -469,8 +551,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("init", help="Create a private, uninstalled procedure draft")
     p.add_argument("id")
-    p.add_argument("--model", required=True)
-    p.add_argument("--effort", default="low")
+    p.add_argument("--complexity", choices=["routine", "complex"], required=True)
+    p.add_argument("--effort")
     p = sub.add_parser("validate", help="Validate the package contract and public content")
     p.add_argument("package", type=Path)
     p = sub.add_parser("test", help="Run fresh low-cost model tests with independent checks")
@@ -494,10 +576,12 @@ def main():
     sub.add_parser("list", help="List procedure descriptions and executor configurations")
     sub.add_parser("models", help="List model names/efforts offered by this Codex CLI environment")
     sub.add_parser("audit", help="Check publishable text without private runtime directories")
+    p = sub.add_parser("build-plugin", help="Build a public-only plugin ZIP from verified procedures")
+    p.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "init":
-            print(init_draft(args.id, args.library, args.model, args.effort))
+            print(init_draft(args.id, args.library, args.complexity, args.effort))
         elif args.command == "validate":
             manifest(args.package)
             print(json.dumps({"valid": True, "public_files": audit(args.package), "content_digest": fingerprint(args.package)}))
@@ -529,6 +613,8 @@ def main():
             print(json.dumps(available_models(), ensure_ascii=False, indent=2))
         elif args.command == "audit":
             print(json.dumps({"public_files_checked": audit(args.library), "passed": True}))
+        elif args.command == "build-plugin":
+            print(build_plugin(args.library, args.output or args.library / "dist"))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

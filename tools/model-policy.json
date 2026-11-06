@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "routine": {
+      "model": "gpt-6-luna",
+      "default_reasoning_effort": "low",
+      "when": "步骤和输入明确，主要是固定操作、数据转换或少量已知分支。"
+    },
+    "complex": {
+      "model": "gpt-6.1-terra",
+      "default_reasoning_effort": "medium",
+      "when": "需要较多分支判断、视觉理解、跨工具操作或结合上下文作出决定。"
+    }
+  },
+  "unavailable_model": "stop"
+}

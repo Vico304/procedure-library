@@ -1,0 +1,6 @@
+interface:
+  display_name: "复制目录并核对文件与目录结构一致性"
+  short_description: "按已验证的标准步骤执行该流程，固定使用登记模型并独立检查实际结果"
+  default_prompt: "使用 $procedure-directory-copy-verify 执行当前匹配任务，确认参数和前提后调用已验证的流程入口。"
+policy:
+  allow_implicit_invocation: true

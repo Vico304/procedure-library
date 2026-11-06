@@ -1,15 +1,15 @@
 {
-  "tested_at": "2026-11-06T08:10:14.824477Z",
-  "content_digest": "cc18dee7da80362d53fe950239efc1f9adfbb12b01bb1b471364600864acb7fc",
-  "runtime_digest": "8138fe454c507d2e301253181dd7a3b6f5600dbe7c30df9e8c27a769fa94964f",
+  "tested_at": "2026-11-06T08:51:44.821313Z",
+  "content_digest": "8b1e58247e09209f9637fc2b0065e3466ea4b6ec43c283ed4e95b1add7fae5ff",
+  "runtime_digest": "dc1931428dc4b2cce149f24eb36f84e62396913807ada6fe0901d8381502ad5c",
   "executor": {
-    "model": "gpt-5.6-luna",
+    "model": "gpt-6-luna",
     "reasoning_effort": "low"
   },
   "environment": {
     "platform": "darwin",
     "python": "3.14.6",
-    "codex": "codex-cli 0.146.0"
+    "codex": "codex-cli 0.167.0-alpha.3.2"
   },
   "passed": true,
   "cases": [

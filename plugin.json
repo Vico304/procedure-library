@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "procedure-library",
+  "version": "0.2.0",
+  "description": "注册、独立验收与复用标准流程，按任务复杂度选择 GPT-6 Luna 或 GPT-6.1 Terra。",
+  "author": {"name": "Vico304"},
+  "repository": "https://github.com/Vico304/procedure-library",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "标准流程库",
+        "shortDescription": "流程注册、模型验收与重复执行，按复杂度使用 6 Luna 或 6.1 Terra",
+        "longDescription": "把已经跑通的任务整理为参数化流程，使用指定执行模型独立验收，通过后生成可自动匹配的流程技能。公开库保存规范与已验证脚本，本地参数和日志单独保留。",
+        "developerName": "Vico304",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": ["把刚才跑通的任务注册为标准流程，按复杂度选择 6 Luna 或 6.1 Terra，验收通过后加入流程库。"]
+      }
+    }
+  }
+}

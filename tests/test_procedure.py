@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,7 +23,7 @@ class ProcedureTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name).resolve()
         self.library = self.base / "library"
-        self.package = procedure.init_draft("test-task", self.library, "test-model", "low")
+        self.package = procedure.init_draft("test-task", self.library, "routine")
         self.data = procedure.read_json(self.package / "procedure.json")
         self.data["description"] = "Write a test artifact"
         self.data["triggers"] = ["create the requested test artifact"]
@@ -50,7 +51,7 @@ class ProcedureTests(unittest.TestCase):
         return procedure.promote(self.package, report, self.library)
 
     def test_draft_is_uninstallable_and_template_is_incomplete(self):
-        unfinished = procedure.init_draft("unfinished", self.library, "test-model", "low")
+        unfinished = procedure.init_draft("unfinished", self.library, "routine")
         with self.assertRaisesRegex(ValueError, "draft description"):
             procedure.manifest(unfinished)
         with self.assertRaises(FileNotFoundError):
@@ -148,9 +149,48 @@ class ProcedureTests(unittest.TestCase):
             procedure.write_json(state / "result.json", response)
             return response
 
-        with patch.object(procedure, "require_tools"), patch.object(procedure, "worker", lying_worker), patch.object(procedure.subprocess, "run", control_run):
+        with patch.object(procedure, "require_tools"), patch.object(procedure, "codex_executable", return_value="codex"), patch.object(procedure, "worker", lying_worker), patch.object(procedure.subprocess, "run", control_run):
             self.assertFalse(procedure.test_package(self.package, self.library, 10))
         self.assertFalse((self.library / "procedures" / "test-task").exists())
+
+    def test_complexity_selects_only_requested_models(self):
+        self.assertEqual(procedure.executor_profile("routine"), {"model": "gpt-6-luna", "reasoning_effort": "low"})
+        self.assertEqual(procedure.executor_profile("complex"), {"model": "gpt-6.1-terra", "reasoning_effort": "medium"})
+        self.data["executor"]["model"] = "gpt-5.6-luna"
+        procedure.write_json(self.package / "procedure.json", self.data)
+        with self.assertRaisesRegex(ValueError, "6 Luna or 6.1 Terra only"):
+            procedure.manifest(self.package)
+
+    def test_policy_change_invalidates_old_verification(self):
+        published = self.publish()
+        with patch.object(procedure, "runtime_digest", return_value="changed-policy-digest"):
+            with self.assertRaisesRegex(ValueError, "revalidation"):
+                procedure.require_ready(published)
+
+    def test_plugin_build_excludes_private_data_and_uses_shared_packages(self):
+        self.publish()
+        procedure.write_json(self.library / "plugin.json", {"name": "procedure-library", "version": "0.2.0"})
+        import shutil
+        for relative in ("tools/procedure.py", "tools/model-policy.json", "skills/procedure-register/SKILL.md"):
+            target = self.library / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, target)
+        procedure.write_json(self.library / ".local/private-parameters.json", {"input": "private-binding"})
+        archive = procedure.build_plugin(self.library, self.library / "dist")
+        with zipfile.ZipFile(archive) as package:
+            names = package.namelist()
+            self.assertFalse(any(".local/" in p or ".git/" in p for p in names))
+            wrapper = package.read("procedure-library/skills/procedure-test-task/SKILL.md").decode()
+            self.assertIn("../../procedures/test-task/procedure.json", wrapper)
+            self.assertNotIn(".runner", wrapper)
+        self.assertGreater(procedure.audit(self.library), 0)
+
+    def test_explicit_outdated_cli_is_not_silently_replaced(self):
+        procedure.codex_executable.cache_clear()
+        self.addCleanup(procedure.codex_executable.cache_clear)
+        with patch.dict(procedure.os.environ, {"PROCEDURE_CODEX": "old-codex"}), patch.object(procedure.shutil, "which", return_value="old-codex"), patch.object(procedure.subprocess, "run", return_value=SimpleNamespace(stdout="codex-cli 0.146.0")):
+            with self.assertRaisesRegex(ValueError, "0.159.0"):
+                procedure.codex_executable()
 
 
 if __name__ == "__main__":

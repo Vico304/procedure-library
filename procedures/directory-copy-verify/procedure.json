@@ -1,21 +1,56 @@
 {
   "schema_version": 1,
   "id": "directory-copy-verify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "复制目录并核对文件与目录结构一致性",
-  "triggers": ["将目录复制到指定新位置并验证完整性", "重复复制已相同的目录", "复制前检查目标冲突"],
+  "triggers": [
+    "将目录复制到指定新位置并验证完整性",
+    "重复复制已相同的目录",
+    "复制前检查目标冲突"
+  ],
   "instructions": "procedure.md",
   "parameters": {
-    "source": {"type": "directory", "access": "read", "required": true, "description": "待复制的目录"},
-    "target": {"type": "directory", "access": "write", "required": true, "description": "新目标或已相同的目标目录"}
+    "source": {
+      "type": "directory",
+      "access": "read",
+      "required": true,
+      "description": "待复制的目录"
+    },
+    "target": {
+      "type": "directory",
+      "access": "write",
+      "required": true,
+      "description": "新目标或已相同的目标目录"
+    }
   },
-  "requirements": {"commands": ["python3"]},
-  "executor": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+  "requirements": {
+    "commands": [
+      "python3"
+    ]
+  },
+  "executor": {
+    "model": "gpt-6-luna",
+    "reasoning_effort": "low"
+  },
   "prepare": "checks/prepare.py",
   "verify": "checks/verify.py",
   "cases": [
-    {"id": "basic", "task": "Copy the supplied source directory to the target and verify the result using the procedure.", "expect_status": "success"},
-    {"id": "changed-input", "task": "Perform the same copy procedure for these different input names and contents, then repeat the operation once to confirm idempotence.", "expect_status": "success"},
-    {"id": "existing-target", "task": "Perform the procedure if its preconditions allow it. Respect its existing-target conflict rule.", "expect_status": "blocked"}
-  ]
+    {
+      "id": "basic",
+      "task": "Copy the supplied source directory to the target and verify the result using the procedure.",
+      "expect_status": "success"
+    },
+    {
+      "id": "changed-input",
+      "task": "Perform the same copy procedure for these different input names and contents, then repeat the operation once to confirm idempotence.",
+      "expect_status": "success"
+    },
+    {
+      "id": "existing-target",
+      "task": "Perform the procedure if its preconditions allow it. Respect its existing-target conflict rule.",
+      "expect_status": "blocked"
+    }
+  ],
+  "complexity": "routine",
+  "complexity_reason": "目录复制、冲突停止和内容指纹核对均由明确步骤与脚本完成，仅需少量已知分支。"
 }

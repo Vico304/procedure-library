@@ -3,7 +3,7 @@
   "procedures": [
     {
       "id": "directory-copy-verify",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "复制目录并核对文件与目录结构一致性",
       "triggers": [
         "将目录复制到指定新位置并验证完整性",
@@ -11,7 +11,7 @@
         "复制前检查目标冲突"
       ],
       "executor": {
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "reasoning_effort": "low"
       }
     }
